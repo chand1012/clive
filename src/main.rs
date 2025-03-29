@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use log::{debug, info, warn};
 use std::path::PathBuf;
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::DecoderOptions;
@@ -29,7 +30,7 @@ struct Args {
     output: Option<PathBuf>,
 
     /// Path to config file
-    #[arg(short, long)]
+    #[arg(long)]
     config: Option<PathBuf>,
 
     /// Whisper model to use (base, tiny, small, medium, large)
@@ -47,10 +48,25 @@ struct Args {
     /// Don't clean up intermediate files
     #[arg(long)]
     no_cleanup: bool,
+
+    /// Enable verbose logging
+    #[arg(short, long)]
+    verbose: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+
+    // Initialize logging
+    if args.verbose {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("debug"))
+            .format_timestamp(None)
+            .init();
+    } else {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+            .format_timestamp(None)
+            .init();
+    }
 
     // Initialize configuration
     let mut config = if let Some(config_path) = args.config {
@@ -105,34 +121,56 @@ fn main() -> Result<()> {
 
 fn process_video(config: &Config, cache: &Cache) -> Result<()> {
     let input_path = config.input_file.as_ref().unwrap();
+    info!("Processing video: {}", input_path.display());
 
     // Step 1: Check/Download model
+    debug!("Step 1: Checking/Downloading model");
     download_model_if_needed(config, cache)?;
 
     // Step 2: Extract audio tracks
+    debug!("Step 2: Extracting audio tracks");
     let audio_paths = extract_audio_tracks(config, cache)?;
+    debug!("Extracted {} audio tracks", audio_paths.len());
 
     // Step 3: Transcribe audio and combine results
+    debug!("Step 3: Transcribing audio");
     let timestamps = transcribe_audio_tracks(&config.clive.model, &audio_paths, cache)?;
+    debug!("Found {} timestamp segments", timestamps.len());
 
     // Step 4: Find clips based on keywords
+    debug!("Step 4: Finding clips based on keywords");
     let clips = find_clips(&timestamps, config)?;
+    debug!("Found {} clips matching keywords", clips.len());
 
     // Step 5: Create output clips
+    debug!("Step 5: Creating output clips");
     create_output_clips(input_path, &clips, &config.output.directory)?;
+    info!("Successfully created {} clips", clips.len());
 
     Ok(())
 }
 
 fn download_model_if_needed(config: &Config, cache: &Cache) -> Result<()> {
     if !cache.model_exists(&config.clive.model) {
-        println!("Downloading {} model...", config.clive.model);
+        info!("Downloading {} model...", config.clive.model);
         let url = get_model_url(&config.clive.model)?;
+        debug!("Model URL: {}", url);
 
-        let response = ureq::get(&url).call().context("Failed to download model")?;
+        let mut response = ureq::get(&url).call().context("Failed to download model")?;
+        debug!("Got response from server");
 
         let mut file = std::fs::File::create(cache.model_path(&config.clive.model))?;
-        std::io::copy(&mut response.into_reader(), &mut file)?;
+        debug!(
+            "Created model file at {}",
+            cache.model_path(&config.clive.model).display()
+        );
+        std::io::copy(&mut response.body_mut().as_reader(), &mut file)?;
+        info!("Successfully downloaded model");
+    } else {
+        debug!(
+            "Model already exists at {}",
+            cache.model_path(&config.clive.model).display()
+        );
     }
     Ok(())
 }
@@ -152,23 +190,29 @@ fn get_model_url(model_name: &str) -> Result<String> {
 
 fn extract_audio_tracks(config: &Config, cache: &Cache) -> Result<Vec<PathBuf>> {
     let input_path = config.input_file.as_ref().unwrap();
+    debug!("Extracting audio tracks from {}", input_path.display());
     let mut audio_paths = Vec::new();
 
     for &track in &config.tracks.audio_tracks {
+        debug!("Processing audio track {}", track);
         let output_path = cache.audio_path(input_path, track);
+        debug!("Extracting to {}", output_path.display());
         FFmpeg::extract_audio_tracks(input_path, &output_path, &[track])?;
         audio_paths.push(output_path);
+        debug!("Successfully extracted track {}", track);
     }
 
     Ok(audio_paths)
 }
 
 fn load_audio(path: &PathBuf) -> Result<Vec<f32>> {
+    debug!("Loading audio from {}", path.display());
     let file = std::fs::File::open(path)?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
     let mut hint = Hint::new();
     hint.with_extension("mp3");
+    debug!("Created MP3 hint for audio decoding");
 
     let format_opts: FormatOptions = Default::default();
     let metadata_opts: MetadataOptions = Default::default();
@@ -177,6 +221,7 @@ fn load_audio(path: &PathBuf) -> Result<Vec<f32>> {
     let probed = symphonia::default::get_probe()
         .format(&hint, mss, &format_opts, &metadata_opts)
         .context("Failed to probe audio format")?;
+    debug!("Successfully probed audio format");
 
     let mut format = probed.format;
     let track = format.default_track().context("No default track found")?;
@@ -188,6 +233,7 @@ fn load_audio(path: &PathBuf) -> Result<Vec<f32>> {
     let mut sample_buf = None;
     let mut samples = Vec::new();
 
+    debug!("Loading audio samples");
     while let Ok(packet) = format.next_packet() {
         if packet.track_id() != track_id {
             continue;
@@ -199,6 +245,7 @@ fn load_audio(path: &PathBuf) -> Result<Vec<f32>> {
                 decoded.capacity() as u64,
                 decoded.spec().clone(),
             ));
+            debug!("Created sample buffer with capacity {}", decoded.capacity());
         }
 
         if let Some(buf) = &mut sample_buf {
@@ -207,6 +254,7 @@ fn load_audio(path: &PathBuf) -> Result<Vec<f32>> {
         }
     }
 
+    debug!("Loaded {} audio samples", samples.len());
     Ok(samples)
 }
 
@@ -215,23 +263,32 @@ fn transcribe_audio_tracks(
     audio_paths: &[PathBuf],
     cache: &Cache,
 ) -> Result<Vec<Timestamp>> {
+    debug!("Loading Whisper model: {}", model_name);
     let ctx = WhisperContext::new_with_params(
         &cache.model_path(model_name).to_string_lossy(),
         WhisperContextParameters::default(),
     )
     .context("Failed to load Whisper model")?;
+    debug!("Successfully loaded Whisper model");
 
     let mut all_timestamps = Vec::new();
 
-    for audio_path in audio_paths {
+    for (i, audio_path) in audio_paths.iter().enumerate() {
+        debug!("Processing audio file {} of {}", i + 1, audio_paths.len());
         let samples = load_audio(audio_path)?;
+        debug!("Loaded {} samples", samples.len());
 
         // Convert samples to i16 for whisper processing
+        debug!("Converting samples to i16 format");
         let i16_samples: Vec<i16> = samples.iter().map(|&x| (x * 32767.0) as i16).collect();
 
         // Process audio in chunks to avoid memory issues
         let chunk_size = 16000 * 30; // 30 seconds chunks
-        for chunk in i16_samples.chunks(chunk_size) {
+        let total_chunks = (i16_samples.len() + chunk_size - 1) / chunk_size;
+        debug!("Processing {} chunks of 30 seconds each", total_chunks);
+
+        for (chunk_idx, chunk) in i16_samples.chunks(chunk_size).enumerate() {
+            debug!("Processing chunk {} of {}", chunk_idx + 1, total_chunks);
             let mut state = ctx.create_state().context("Failed to create state")?;
 
             // Convert chunk to f32 for whisper
@@ -246,16 +303,18 @@ fn transcribe_audio_tracks(
             params.set_print_progress(false);
             params.set_print_realtime(false);
             params.set_print_timestamps(false);
+            params.set_max_tokens(1);
 
             // Run transcription
+            debug!("Running transcription on chunk");
             state
                 .full(params, &inter_samples)
                 .context("Failed to process audio")?;
 
-            // Get segments
             let num_segments = state
                 .full_n_segments()
                 .context("Failed to get number of segments")?;
+            debug!("Found {} segments in chunk", num_segments);
 
             for i in 0..num_segments {
                 let text = state
@@ -268,13 +327,13 @@ fn transcribe_audio_tracks(
                     .full_get_segment_t1(i)
                     .context("Failed to get segment end")? as f64;
 
+                debug!("Segment {}: {}s -> {}s: {}", i, start, end, text);
                 all_timestamps.push(Timestamp { start, end, text });
             }
         }
     }
 
-    // Sort timestamps by start time
-    all_timestamps.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap());
+    debug!("Total timestamps found: {}", all_timestamps.len());
     Ok(all_timestamps)
 }
 

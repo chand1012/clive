@@ -1,0 +1,14 @@
+[clive]
+model = "base"
+
+[tracks]
+# if there are multiple audio tracks in a video, specify which ones to use.
+# Ideally users should record voices in separate tracks for easier processing.
+audio_tracks = [2, 3] # default 
+
+[clips.clip]
+start_time = 60 # seconds before the keyword
+end_time = 5    # seconds after the keyword
+
+[output]
+directory = "output"

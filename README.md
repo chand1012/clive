@@ -1,8 +1,26 @@
-<p align="center">
-  <img src="assets/logo.png" alt="Clive Logo" />
-  <h1>Clive</h1>
-  <p>Clive is a CLI tool for transcribing and clipping audio using keywords.</p>
-</p>
+# Clive: CLI tool for transcribing and clipping audio
+
+<div align="center">
+  <img src="assets/logo.png" alt="Clive Logo" width="200">
+  <h1>Clive CLI: Audio transcription and clipping for the AI era</h1>
+</div>
+
+<div align="center">
+  <a href="https://github.com/chand1012/clive">
+    <img src="https://img.shields.io/badge/Clive-CLI-blue" alt="Clive CLI">
+  </a>
+  <a href="https://github.com/chand1012/clive/blob/main/LICENSE">
+    <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
+  </a>
+  <a href="https://crates.io/crates/clive">
+    <img src="https://img.shields.io/crates/v/clive.svg" alt="Version">
+  </a>
+  <a href="https://docs.rs/clive">
+    <img src="https://img.shields.io/badge/docs-latest-orange" alt="Documentation">
+  </a>
+</div>
+
+Clive is a command-line tool for transcribing audio and creating clips based on keywords. It's designed to make working with audio transcription and clipping as human-friendly as possible, providing a simple and natural syntax with formatted output.
 
 ## Toolchain
 
@@ -81,3 +99,10 @@ clive --input input.mp4 --output output.mp4 --model base --tracks 1 2 --clips ke
 - There should be a cleanup step at the end to remove any intermediate files.
   - This can be disabled via a `--no-cleanup` flag.
 - The config file is optional, but either config or command line arguments must be provided.
+
+## Roadmap
+
+- [ ] Get initial clipping working
+- [ ] Add a step to merge overlapping clips
+- [ ] Add the ability to cut out silence
+- [ ] Add LLM support for more complex operations
