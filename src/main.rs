@@ -227,7 +227,7 @@ fn transcribe_audio_tracks(
         let samples = load_audio(audio_path)?;
 
         // Convert samples to i16 for whisper processing
-        let mut i16_samples: Vec<i16> = samples.iter().map(|&x| (x * 32767.0) as i16).collect();
+        let i16_samples: Vec<i16> = samples.iter().map(|&x| (x * 32767.0) as i16).collect();
 
         // Process audio in chunks to avoid memory issues
         let chunk_size = 16000 * 30; // 30 seconds chunks

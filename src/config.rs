@@ -82,7 +82,7 @@ impl Config {
     /// * `path` - Path to the configuration file
     pub fn from_file(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path).context("Failed to read config file")?;
-        let mut config: Config =
+        let config: Config =
             toml::from_str(&contents).context("Failed to parse config file")?;
 
         // Ensure output directory exists
