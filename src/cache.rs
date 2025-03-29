@@ -1,11 +1,10 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Represents a timestamp in the transcription
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Timestamp {
     /// Start time in seconds
     pub start: f64,
@@ -16,7 +15,7 @@ pub struct Timestamp {
 }
 
 /// Represents a clip with its timing information
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Clip {
     /// Start time in seconds
     pub start: f64,
@@ -163,7 +162,7 @@ impl Cache {
             if path
                 .file_stem()
                 .and_then(|s| s.to_str())
-                .map(|s| s.starts_with(&input_path.file_stem().unwrap().to_string_lossy()))
+                .map(|s| s.starts_with(input_path.file_stem().unwrap().to_string_lossy().as_ref()))
                 .unwrap_or(false)
             {
                 fs::remove_file(path)?;

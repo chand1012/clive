@@ -7,7 +7,7 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
-use whisper_rs::{WhisperBuilder, WhisperContext};
+use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 mod cache;
 mod config;
@@ -181,7 +181,7 @@ fn load_audio(path: &PathBuf) -> Result<Vec<f32>> {
     let mut format = probed.format;
     let track = format.default_track().context("No default track found")?;
     let mut decoder = symphonia::default::get_codecs()
-        .make_decoder(track.codec_params.clone(), &decoder_opts)
+        .make(&track.codec_params, &decoder_opts)
         .context("Failed to create decoder")?;
 
     let track_id = track.id;
@@ -197,7 +197,7 @@ fn load_audio(path: &PathBuf) -> Result<Vec<f32>> {
         if sample_buf.is_none() {
             sample_buf = Some(SampleBuffer::<f32>::new(
                 decoded.capacity() as u64,
-                decoded.spec(),
+                decoded.spec().clone(),
             ));
         }
 
@@ -215,28 +215,58 @@ fn transcribe_audio_tracks(
     audio_paths: &[PathBuf],
     cache: &Cache,
 ) -> Result<Vec<Timestamp>> {
-    let ctx = WhisperBuilder::new()
-        .model_path(&cache.model_path(model_name).to_string_lossy())
-        .build()
-        .context("Failed to load Whisper model")?;
+    let ctx = WhisperContext::new_with_params(
+        &cache.model_path(model_name).to_string_lossy(),
+        WhisperContextParameters::default(),
+    )
+    .context("Failed to load Whisper model")?;
 
     let mut all_timestamps = Vec::new();
 
     for audio_path in audio_paths {
         let samples = load_audio(audio_path)?;
 
+        // Convert samples to i16 for whisper processing
+        let mut i16_samples: Vec<i16> = samples.iter().map(|&x| (x * 32767.0) as i16).collect();
+
         // Process audio in chunks to avoid memory issues
         let chunk_size = 16000 * 30; // 30 seconds chunks
-        for chunk in samples.chunks(chunk_size) {
+        for chunk in i16_samples.chunks(chunk_size) {
             let mut state = ctx.create_state().context("Failed to create state")?;
-            state.full(chunk).context("Failed to process audio")?;
 
-            let num_segments = state.num_segments().context("Failed to get segments")?;
+            // Convert chunk to f32 for whisper
+            let mut inter_samples = vec![0.0; chunk.len()];
+            whisper_rs::convert_integer_to_float_audio(chunk, &mut inter_samples)
+                .context("Failed to convert audio to float")?;
+
+            // Create parameters for transcription
+            let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+            params.set_language(Some("en"));
+            params.set_print_special(false);
+            params.set_print_progress(false);
+            params.set_print_realtime(false);
+            params.set_print_timestamps(false);
+
+            // Run transcription
+            state
+                .full(params, &inter_samples)
+                .context("Failed to process audio")?;
+
+            // Get segments
+            let num_segments = state
+                .full_n_segments()
+                .context("Failed to get number of segments")?;
+
             for i in 0..num_segments {
-                let segment = state.get_segment(i).context("Failed to get segment")?;
-                let text = segment.text;
-                let start = segment.start as f64;
-                let end = segment.end as f64;
+                let text = state
+                    .full_get_segment_text(i)
+                    .context("Failed to get segment text")?;
+                let start = state
+                    .full_get_segment_t0(i)
+                    .context("Failed to get segment start")? as f64;
+                let end = state
+                    .full_get_segment_t1(i)
+                    .context("Failed to get segment end")? as f64;
 
                 all_timestamps.push(Timestamp { start, end, text });
             }

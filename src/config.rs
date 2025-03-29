@@ -163,7 +163,7 @@ impl Config {
         }
 
         if cli_config.clive.model != "base" {
-            self.clive.model = cli_config.model;
+            self.clive.model = cli_config.clive.model;
         }
 
         if cli_config.output.directory != default_output_dir() {
