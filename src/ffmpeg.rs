@@ -26,27 +26,47 @@ impl FFmpeg {
         output_path: &Path,
         tracks: &[u32],
     ) -> Result<()> {
-        let track_map = tracks
-            .iter()
-            .map(|t| format!("0:{}", t - 1))
-            .collect::<Vec<_>>()
-            .join(";");
+        // Build the track mapping arguments
+        let mut args = vec!["-i", input_path.to_str().unwrap()];
 
-        Command::new("ffmpeg")
-            .args([
-                "-i",
-                input_path.to_str().unwrap(),
-                "-map",
-                &track_map,
-                "-c:a",
-                "libmp3lame",
-                "-q:a",
-                "4",
-                output_path.to_str().unwrap(),
-                "-y",
-            ])
+        // Add mapping for each track
+        let track_maps: Vec<String> = tracks
+            .iter()
+            .map(|track| format!("0:a:{}", track - 1))
+            .collect();
+
+        // Add the track mappings to args
+        for track_map in &track_maps {
+            args.extend_from_slice(&["-map", track_map.as_str()]);
+        }
+
+        // Add output format arguments
+        args.extend_from_slice(&[
+            "-f",
+            "wav", // Force WAV format
+            "-acodec",
+            "pcm_s16le", // 16-bit PCM
+            "-ar",
+            "16000", // 16kHz sample rate
+            "-ac",
+            "1",   // mono
+            "-vn", // Disable video
+            "-y",  // Overwrite output
+            output_path.to_str().unwrap(),
+        ]);
+
+        let output = Command::new("ffmpeg")
+            .args(&args)
             .output()
-            .context("Failed to extract audio tracks")?;
+            .context("Failed to run ffmpeg command")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow::anyhow!(
+                "FFmpeg failed to extract audio tracks: {}",
+                stderr
+            ));
+        }
 
         Ok(())
     }
@@ -148,7 +168,6 @@ impl FFmpeg {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tempfile::tempdir;
 
     #[test]
     fn test_ffmpeg_available() {

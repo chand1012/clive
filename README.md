@@ -12,15 +12,27 @@
   <a href="https://github.com/chand1012/clive/blob/main/LICENSE">
     <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
   </a>
-  <a href="https://crates.io/crates/clive">
-    <img src="https://img.shields.io/crates/v/clive.svg" alt="Version">
-  </a>
-  <a href="https://docs.rs/clive">
-    <img src="https://img.shields.io/badge/docs-latest-orange" alt="Documentation">
-  </a>
 </div>
 
 Clive is a command-line tool for transcribing audio and creating clips based on keywords. It's designed to make working with audio transcription and clipping as human-friendly as possible, providing a simple and natural syntax with formatted output.
+
+## Installing from source
+
+### Prerequisites
+
+- [Rust](https://www.rust-lang.org/tools/install)
+- [LLVM](https://llvm.org/docs/GettingStarted.html)
+- [FFMPEG](https://ffmpeg.org/download.html)
+- [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) (Windows and Linux)
+- [XCode](https://developer.apple.com/xcode/) (MacOS)
+
+### Clone the repository
+
+```bash
+git clone https://github.com/chand1012/clive.git
+cd clive
+cargo install --path .
+```
 
 ## Toolchain
 
@@ -102,7 +114,7 @@ clive --input input.mp4 --output output.mp4 --model base --tracks 1 2 --clips ke
 
 ## Roadmap
 
-- [ ] Get initial clipping working
-- [ ] Add a step to merge overlapping clips
+- [x] Get initial clipping working
+- [x] Add a step to merge overlapping clips
 - [ ] Add the ability to cut out silence
 - [ ] Add LLM support for more complex operations

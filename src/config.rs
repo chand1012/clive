@@ -82,8 +82,7 @@ impl Config {
     /// * `path` - Path to the configuration file
     pub fn from_file(path: &Path) -> Result<Self> {
         let contents = fs::read_to_string(path).context("Failed to read config file")?;
-        let config: Config =
-            toml::from_str(&contents).context("Failed to parse config file")?;
+        let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
 
         // Ensure output directory exists
         fs::create_dir_all(&config.output.directory)
@@ -185,7 +184,8 @@ impl Config {
 
         // Validate model name
         match self.clive.model.as_str() {
-            "base" | "tiny" | "small" | "medium" | "large" => (),
+            "base" | "tiny" | "small" | "medium" | "large" | "base.en" | "tiny.en" | "small.en"
+            | "medium.en" | "large.en" => (),
             _ => anyhow::bail!("Invalid model name: {}", self.clive.model),
         }
 

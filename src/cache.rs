@@ -91,7 +91,7 @@ impl Cache {
     pub fn audio_path(&self, input_path: &Path, track: u32) -> PathBuf {
         let file_stem = input_path.file_stem().unwrap_or_default();
         self.audio_dir.join(format!(
-            "{}_track_{}.mp3",
+            "{}_track_{}.wav",
             file_stem.to_string_lossy(),
             track
         ))

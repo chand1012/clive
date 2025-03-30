@@ -1,13 +1,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use log::{debug, info, warn};
+use hound;
+use log::{debug, info};
 use std::path::PathBuf;
-use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::DecoderOptions;
-use symphonia::core::formats::FormatOptions;
-use symphonia::core::io::MediaSourceStream;
-use symphonia::core::meta::MetadataOptions;
-use symphonia::core::probe::Hint;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 mod cache;
@@ -42,7 +37,7 @@ struct Args {
     tracks: Option<Vec<u32>>,
 
     /// Keywords to search for in the audio
-    #[arg(short, long)]
+    #[arg(short, long, num_args = 1.., value_delimiter = ' ')]
     clips: Option<Vec<String>>,
 
     /// Don't clean up intermediate files
@@ -137,6 +132,11 @@ fn process_video(config: &Config, cache: &Cache) -> Result<()> {
     let timestamps = transcribe_audio_tracks(&config.clive.model, &audio_paths, cache)?;
     debug!("Found {} timestamp segments", timestamps.len());
 
+    // Step 3.5: Save timestamps to cache
+    debug!("Step 3.5: Saving timestamps to cache");
+    cache.save_transcription(input_path, timestamps.clone())?;
+    debug!("Successfully saved timestamps to cache");
+
     // Step 4: Find clips based on keywords
     debug!("Step 4: Finding clips based on keywords");
     let clips = find_clips(&timestamps, config)?;
@@ -178,10 +178,14 @@ fn download_model_if_needed(config: &Config, cache: &Cache) -> Result<()> {
 fn get_model_url(model_name: &str) -> Result<String> {
     let base_url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
     let url = match model_name {
-        "base" => format!("{}ggml-base.en-q8_0.bin?download=true", base_url),
-        "tiny" => format!("{}ggml-tiny.en-q8_0.bin?download=true", base_url),
-        "small" => format!("{}ggml-small.en-q8_0.bin?download=true", base_url),
-        "medium" => format!("{}ggml-medium.en-q5_0.bin?download=true", base_url),
+        "base" => format!("{}ggml-base.q8_0.bin?download=true", base_url),
+        "base.en" => format!("{}ggml-base.en-q8_0.bin?download=true", base_url),
+        "tiny" => format!("{}ggml-tiny.q8_0.bin?download=true", base_url),
+        "tiny.en" => format!("{}ggml-tiny.en-q8_0.bin?download=true", base_url),
+        "small" => format!("{}ggml-small.q8_0.bin?download=true", base_url),
+        "small.en" => format!("{}ggml-small.en-q8_0.bin?download=true", base_url),
+        "medium" => format!("{}ggml-medium.q5_0.bin?download=true", base_url),
+        "medium.en" => format!("{}ggml-medium.en-q5_0.bin?download=true", base_url),
         "large" => format!("{}ggml-large-v3-turbo-q8_0.bin?download=true", base_url),
         _ => anyhow::bail!("Invalid model name: {}", model_name),
     };
@@ -206,56 +210,17 @@ fn extract_audio_tracks(config: &Config, cache: &Cache) -> Result<Vec<PathBuf>> 
 }
 
 fn load_audio(path: &PathBuf) -> Result<Vec<f32>> {
-    debug!("Loading audio from {}", path.display());
-    let file = std::fs::File::open(path)?;
-    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    debug!("Loading WAV file: {}", path.display());
+    let reader = hound::WavReader::open(path).context("Failed to open WAV file")?;
 
-    let mut hint = Hint::new();
-    hint.with_extension("mp3");
-    debug!("Created MP3 hint for audio decoding");
+    let samples: Vec<i16> = reader.into_samples().map(|s| s.unwrap()).collect();
+    let mut float_samples = vec![0.0; samples.len()];
 
-    let format_opts: FormatOptions = Default::default();
-    let metadata_opts: MetadataOptions = Default::default();
-    let decoder_opts: DecoderOptions = Default::default();
+    // Convert to float samples
+    whisper_rs::convert_integer_to_float_audio(&samples, &mut float_samples)
+        .context("Failed to convert audio to float")?;
 
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &format_opts, &metadata_opts)
-        .context("Failed to probe audio format")?;
-    debug!("Successfully probed audio format");
-
-    let mut format = probed.format;
-    let track = format.default_track().context("No default track found")?;
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&track.codec_params, &decoder_opts)
-        .context("Failed to create decoder")?;
-
-    let track_id = track.id;
-    let mut sample_buf = None;
-    let mut samples = Vec::new();
-
-    debug!("Loading audio samples");
-    while let Ok(packet) = format.next_packet() {
-        if packet.track_id() != track_id {
-            continue;
-        }
-
-        let decoded = decoder.decode(&packet)?;
-        if sample_buf.is_none() {
-            sample_buf = Some(SampleBuffer::<f32>::new(
-                decoded.capacity() as u64,
-                decoded.spec().clone(),
-            ));
-            debug!("Created sample buffer with capacity {}", decoded.capacity());
-        }
-
-        if let Some(buf) = &mut sample_buf {
-            buf.copy_interleaved_ref(decoded);
-            samples.extend_from_slice(buf.samples());
-        }
-    }
-
-    debug!("Loaded {} audio samples", samples.len());
-    Ok(samples)
+    Ok(float_samples)
 }
 
 fn transcribe_audio_tracks(
@@ -271,7 +236,7 @@ fn transcribe_audio_tracks(
     .context("Failed to load Whisper model")?;
     debug!("Successfully loaded Whisper model");
 
-    let mut all_timestamps = Vec::new();
+    let mut all_timestamps: Vec<Timestamp> = Vec::new();
 
     for (i, audio_path) in audio_paths.iter().enumerate() {
         debug!("Processing audio file {} of {}", i + 1, audio_paths.len());
@@ -282,53 +247,132 @@ fn transcribe_audio_tracks(
         debug!("Converting samples to i16 format");
         let i16_samples: Vec<i16> = samples.iter().map(|&x| (x * 32767.0) as i16).collect();
 
-        // Process audio in chunks to avoid memory issues
-        let chunk_size = 16000 * 30; // 30 seconds chunks
-        let total_chunks = (i16_samples.len() + chunk_size - 1) / chunk_size;
-        debug!("Processing {} chunks of 30 seconds each", total_chunks);
+        // Convert to f32 for whisper
+        let mut inter_samples = vec![0.0; i16_samples.len()];
+        whisper_rs::convert_integer_to_float_audio(&i16_samples, &mut inter_samples)
+            .context("Failed to convert audio to float")?;
 
-        for (chunk_idx, chunk) in i16_samples.chunks(chunk_size).enumerate() {
-            debug!("Processing chunk {} of {}", chunk_idx + 1, total_chunks);
-            let mut state = ctx.create_state().context("Failed to create state")?;
+        // Create parameters for transcription
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        params.set_language(Some("en"));
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
 
-            // Convert chunk to f32 for whisper
-            let mut inter_samples = vec![0.0; chunk.len()];
-            whisper_rs::convert_integer_to_float_audio(chunk, &mut inter_samples)
-                .context("Failed to convert audio to float")?;
+        // Create state and run transcription
+        let mut state = ctx.create_state().context("Failed to create state")?;
+        debug!("Running transcription on entire audio file");
+        state
+            .full(params, &inter_samples)
+            .context("Failed to process audio")?;
 
-            // Create parameters for transcription
-            let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
-            params.set_language(Some("en"));
-            params.set_print_special(false);
-            params.set_print_progress(false);
-            params.set_print_realtime(false);
-            params.set_print_timestamps(false);
-            params.set_max_tokens(1);
+        let num_segments = state
+            .full_n_segments()
+            .context("Failed to get number of segments")?;
+        debug!("Found {} segments", num_segments);
 
-            // Run transcription
-            debug!("Running transcription on chunk");
-            state
-                .full(params, &inter_samples)
-                .context("Failed to process audio")?;
+        for i in 0..num_segments {
+            let text = state
+                .full_get_segment_text(i)
+                .context("Failed to get segment text")?;
+            let start = state
+                .full_get_segment_t0(i)
+                .context("Failed to get segment start")? as f64
+                * 0.01;
+            let end = state
+                .full_get_segment_t1(i)
+                .context("Failed to get segment end")? as f64
+                * 0.01;
 
-            let num_segments = state
-                .full_n_segments()
-                .context("Failed to get number of segments")?;
-            debug!("Found {} segments in chunk", num_segments);
+            // Get token-level timestamps for this segment
+            let num_tokens = state
+                .full_n_tokens(i)
+                .context("Failed to get number of tokens")?;
 
-            for i in 0..num_segments {
-                let text = state
-                    .full_get_segment_text(i)
-                    .context("Failed to get segment text")?;
-                let start = state
-                    .full_get_segment_t0(i)
-                    .context("Failed to get segment start")? as f64;
-                let end = state
-                    .full_get_segment_t1(i)
-                    .context("Failed to get segment end")? as f64;
-
+            // If there are no tokens, just add the segment
+            if num_tokens == 0 {
                 debug!("Segment {}: {}s -> {}s: {}", i, start, end, text);
+                // check if the last text and the new text are the same
+                // if they are the same, don't add the segment
+                // if they are different, add the segment
+                if all_timestamps.last().is_some() {
+                    if all_timestamps.last().unwrap().text == text {
+                        continue;
+                    }
+                }
                 all_timestamps.push(Timestamp { start, end, text });
+                continue;
+            }
+
+            // Process each token in the segment
+            let mut token_start = None;
+            let mut current_text = String::new();
+
+            for t in 0..num_tokens {
+                let token = state
+                    .full_get_token_text(i, t)
+                    .context("Failed to get token text")?;
+                let token_data = state
+                    .full_get_token_data(i, t)
+                    .context("Failed to get token data")?;
+
+                // Skip special tokens and empty tokens
+                if token_data.id >= 50258 || token.trim().is_empty() {
+                    continue;
+                }
+
+                // Get token time from whisper
+                let token_time = state
+                    .full_get_segment_t0(i)
+                    .context("Failed to get segment start")?
+                    as f64
+                    * 0.01;
+
+                if token_start.is_none() {
+                    token_start = Some(token_time);
+                }
+
+                // Add the token text
+                current_text.push_str(&token);
+
+                // If this is the last token or the next token is a new word/sentence
+                let is_last_token = t == num_tokens - 1;
+                let is_word_end = token.ends_with(' ') || token.ends_with('\n');
+
+                if is_last_token || is_word_end {
+                    let trimmed_text = current_text.trim();
+                    if !trimmed_text.is_empty() {
+                        debug!(
+                            "Adding word: '{}' ({} -> {})",
+                            trimmed_text,
+                            token_start.unwrap(),
+                            token_time
+                        );
+                        all_timestamps.push(Timestamp {
+                            start: token_start.unwrap(),
+                            end: token_time,
+                            text: trimmed_text.to_string(),
+                        });
+                    }
+                    token_start = None;
+                    current_text.clear();
+                }
+            }
+
+            // Add any remaining text as a segment
+            if !current_text.trim().is_empty() {
+                let trimmed_text = current_text.trim();
+                debug!(
+                    "Adding remaining word: '{}' ({} -> {})",
+                    trimmed_text,
+                    token_start.unwrap_or(start),
+                    end
+                );
+                all_timestamps.push(Timestamp {
+                    start: token_start.unwrap_or(start),
+                    end,
+                    text: trimmed_text.to_string(),
+                });
             }
         }
     }
@@ -345,7 +389,9 @@ fn find_clips(timestamps: &[Timestamp], config: &Config) -> Result<Vec<Clip>> {
             if timestamp
                 .text
                 .to_lowercase()
-                .contains(&keyword.to_lowercase())
+                .split_whitespace()
+                .map(|word| word.trim_matches(|c: char| c.is_ascii_punctuation()))
+                .any(|word| word == keyword.to_lowercase())
             {
                 clips.push(Clip {
                     start: (timestamp.start - clip_config.start_time as f64).max(0.0),

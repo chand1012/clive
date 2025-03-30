@@ -1,7 +1,7 @@
 [package]
 name = "clive"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 description = "Clive is a CLI tool for transcribing and clipping audio"
 authors = ["Chandler <chandler@chigzz.com>"]
 license = "MIT"
@@ -30,6 +30,7 @@ ureq = "3.0.10"
 toml = "0.8.20"
 log = "0.4"
 env_logger = "0.11"
+hound = "3.5.1"
 
 
 [target.'cfg(target_os = "macos")'.dependencies]
