@@ -16,105 +16,138 @@
 
 Clive is a command-line tool for transcribing audio and creating clips based on keywords. It's designed to make working with audio transcription and clipping as human-friendly as possible, providing a simple and natural syntax with formatted output.
 
-## Installing from source
+## Installation
 
 ### Prerequisites
 
-- [Rust](https://www.rust-lang.org/tools/install)
-- [LLVM](https://llvm.org/docs/GettingStarted.html)
-- [FFMPEG](https://ffmpeg.org/download.html)
-- [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) (Windows and Linux)
-- [XCode](https://developer.apple.com/xcode/) (MacOS)
+Before installing Clive, ensure you have the following dependencies installed on your system:
 
-### Clone the repository
+| Dependency | Purpose | Installation |
+|------------|---------|--------------|
+| [Rust](https://www.rust-lang.org/tools/install) | Core build toolchain | Follow the official Rust installation guide |
+| [FFMPEG](https://ffmpeg.org/download.html) | Audio/video processing | Must be available in system PATH |
+| [LLVM](https://llvm.org/docs/GettingStarted.html) | Required for building | Follow OS-specific instructions |
 
+#### Platform-Specific Requirements
+
+- **Windows & Linux**
+  - [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) - Required for GPU acceleration
+- **macOS**
+  - Xcode - Required for Metal support
+  - Install via: `xcode-select --install`
+
+### Building from Source
+
+1. Clone the repository:
 ```bash
 git clone https://github.com/chand1012/clive.git
 cd clive
+```
+
+2. Build and install:
+```bash
 cargo install --path .
 ```
 
-## Toolchain
+The binary will be installed to your Cargo bin directory (usually `~/.cargo/bin/`).
 
-- Rust
-- Whisper CPP (via whisper-rs)
-  - Will require [Vulkan SDK](https://www.lunarg.com/vulkan-sdk/) on Windows and Linux.
-  - Uses Metal on MacOS.
-- FFMPEG for video and audio processing.
-  - Will require [FFMPEG](https://ffmpeg.org/download.html) on Windows, Linux, and MacOS to be available on the system path.
-- GGML files from [HuggingFace](https://huggingface.co/ggerganov/whisper.cpp/tree/main).
-  - Will download at runtime if not present. Allow the user to choose the model via the config or the command line.
+## Usage
 
-## Configuration
+Clive can be configured either through a TOML configuration file or command-line arguments.
 
-Configuration will be done via either a config toml file or via command line arguments.
+### Command Line Interface
+
+```bash
+# Basic usage with config file
+clive --config config.toml
+
+# Direct command line usage
+clive --input input.mp4 \
+      --output output.mp4 \
+      --model base \
+      --tracks 1 2 \
+      --clips keyword1 keyword2 keyword3
+```
+
+### Configuration File
+
+Create a `config.toml` file with your desired settings:
 
 ```toml
 [clive]
-model = "base"
+model = "base"  # Choose from: tiny, base, small, medium, large
 
 [tracks]
-# if there are multiple audio tracks in a video, specify which ones to use.
-# Ideally users should record voices in separate tracks for easier processing.
-audio_tracks = [1, 2] # default 
+# Specify which audio tracks to process
+audio_tracks = [1, 2]  # Default tracks
 
+[clips]
+# Define keywords and their clip boundaries
 [clips.keyword1]
-start_time = 10 # seconds before the keyword
-end_time = 10 # seconds after the keyword
+start_time = 10  # Seconds before keyword
+end_time = 10   # Seconds after keyword
 
 [clips.keyword2]
-start_time = 10 # seconds before the keyword
-end_time = 10 # seconds after the keyword
+start_time = 10
+end_time = 10
 
 [output]
-directory = "output"
+directory = "output"  # Output directory for processed clips
 ```
 
-```bash
-# using the config file
-clive --config config.toml
+## How It Works
 
-# using the command line
-clive --input input.mp4 --output output.mp4 --model base --tracks 1 2 --clips keyword1 keyword2 keyword3 # default for CLI is 30 seconds before and after the keyword
-```
+Clive processes your audio/video files in four main stages:
 
-## Processing Flow
+### 1. Model Preparation
+- Checks for Whisper GGML model in `~/.cache/clive/models/`
+- Downloads from HuggingFace if not present
+- Supports multiple model sizes (tiny to large)
 
-1. Check if the GGML model is present.
+### 2. Audio Processing
+- Extracts specified audio tracks
+- Converts to WAV format
+- Stores temporary files in `~/.cache/clive/audio/`
+- Performs transcription
+- Saves transcription JSON to `~/.cache/clive/transcriptions/`
 
-- If not, download it from HuggingFace.
-- Save it to ~/.cache/clive/models/ggml-<model-name>.bin
+### 3. Keyword Processing
+- Analyzes transcription for keywords
+- Identifies timestamps for each keyword
+- Merges overlapping clip segments
+- Saves clip data to `~/.cache/clive/clips/`
 
-2. Process the input video
+### 4. Video Generation
+- Creates individual clips based on timestamps
+- Exports to specified output directory
+- Optionally cleans up temporary files
 
-- Extract the audio tracks specified in the config.
-- Convert the audio to MP3 format. (saved to ~/.cache/clive/audio)
-- Transcribe the audio.
-- Save the transcription as a JSON file to the cache directory. (saved to ~/.cache/clive/transcriptions)
+## Advanced Features
 
-3. Process the transcription
+### Cache Management
+- Temporary files stored in `~/.cache/clive/`
+- Use `--no-cleanup` to preserve intermediate files
+- Useful for debugging or reprocessing
 
-- Read the transcription JSON file.
-- For each keyword, add the timestamps to the transcription object.
-- Once all the keywords are added, combine any overlapping clips to form a single clip.
-- Save the clips as a JSON file to the cache directory. (saved to ~/.cache/clive/clips)
-
-4. Process the clips
-
-- Read the clips JSON file.
-- For each clip, create a new video file with the specified start and end times from the original video.
-- Save the new video files to the output directory.
-
-### Notes
-
-- The outputs between steps is primarily for debugging purposes.
-- There should be a cleanup step at the end to remove any intermediate files.
-  - This can be disabled via a `--no-cleanup` flag.
-- The config file is optional, but either config or command line arguments must be provided.
+### Model Selection
+Available models from HuggingFace:
+- `tiny`: Fastest, lowest accuracy
+- `base`: Good balance of speed/accuracy
+- `small`: Better accuracy, slower
+- `medium`: High accuracy, slower
+- `large`: Best accuracy, slowest
 
 ## Roadmap
 
-- [x] Get initial clipping working
-- [x] Add a step to merge overlapping clips
-- [ ] Add the ability to cut out silence
-- [ ] Add LLM support for more complex operations
+- [x] Basic clip extraction and merging
+- [x] Overlapping clip management
+- [ ] Silence removal capabilities
+- [ ] LLM integration for advanced operations
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
