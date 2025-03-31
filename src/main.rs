@@ -5,13 +5,7 @@ use log::{debug, info};
 use std::path::PathBuf;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-mod cache;
-mod config;
-mod ffmpeg;
-
-use cache::{Cache, Clip, Timestamp};
-use config::Config;
-use ffmpeg::FFmpeg;
+use clive::{Cache, Clip, Config, FFmpeg, Timestamp};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
