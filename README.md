@@ -1,5 +1,3 @@
- # Clive: CLI tool for transcribing and clipping audio
-
 <div align="center">
   <img src="assets/logo.png" alt="Clive Logo" width="200">
   <h1>Clive CLI: Audio transcription and clipping for the AI era</h1>
