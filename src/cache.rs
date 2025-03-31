@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use blake3;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -26,7 +27,6 @@ pub struct Clip {
 }
 
 /// Manages cache directories and intermediate files
-#[derive(Debug)]
 pub struct Cache {
     /// Base cache directory
     cache_dir: PathBuf,
@@ -74,6 +74,42 @@ impl Cache {
         fs::create_dir_all(&self.transcription_dir)
             .context("Failed to create transcription directory")?;
         fs::create_dir_all(&self.clips_dir).context("Failed to create clips directory")?;
+        Ok(())
+    }
+
+    /// Get a path in the cache for a given input file
+    pub fn get_path_for_input(
+        &self,
+        input: &Path,
+        subdir: &str,
+        extension: &str,
+    ) -> Result<PathBuf> {
+        let hash = blake3::hash(input.to_str().unwrap_or("").as_bytes());
+        let subdir_path = self.cache_dir.join(subdir);
+        fs::create_dir_all(&subdir_path)?;
+        Ok(subdir_path.join(format!("{}.{}", hash, extension)))
+    }
+
+    /// Clean up cache files for a specific input
+    pub fn cleanup_for_input(&self, input: &Path) -> Result<()> {
+        let hash = blake3::hash(input.to_str().unwrap_or("").as_bytes());
+        let hash_str = hash.to_string();
+
+        // Clean up all subdirectories
+        for dir in [
+            &self.models_dir,
+            &self.audio_dir,
+            &self.transcription_dir,
+            &self.clips_dir,
+        ] {
+            for entry in fs::read_dir(dir)? {
+                let entry = entry?;
+                if entry.file_name().to_string_lossy().starts_with(&hash_str) {
+                    fs::remove_file(entry.path())?;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -150,37 +186,6 @@ impl Cache {
         if self.cache_dir.exists() {
             fs::remove_dir_all(&self.cache_dir).context("Failed to remove cache directory")?;
         }
-        Ok(())
-    }
-
-    /// Clean up cache files for a specific input file
-    pub fn cleanup_for_input(&self, input_path: &Path) -> Result<()> {
-        // Remove audio files
-        for entry in fs::read_dir(&self.audio_dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| s.starts_with(input_path.file_stem().unwrap().to_string_lossy().as_ref()))
-                .unwrap_or(false)
-            {
-                fs::remove_file(path)?;
-            }
-        }
-
-        // Remove transcription file
-        let transcription_path = self.transcription_path(input_path);
-        if transcription_path.exists() {
-            fs::remove_file(transcription_path)?;
-        }
-
-        // Remove clips file
-        let clips_path = self.clips_path(input_path);
-        if clips_path.exists() {
-            fs::remove_file(clips_path)?;
-        }
-
         Ok(())
     }
 }

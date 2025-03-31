@@ -1,7 +1,5 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 
 /// Represents a clip configuration with start and end times
@@ -21,7 +19,7 @@ pub struct Config {
     /// Audio track configuration
     pub tracks: TracksConfig,
     /// Clip configurations keyed by keyword
-    pub clips: HashMap<String, ClipConfig>,
+    pub clips: ClipsConfig,
     /// Output configuration
     pub output: OutputConfig,
     /// Input file path (from CLI)
@@ -38,37 +36,35 @@ pub struct CliveConfig {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TracksConfig {
     /// Audio track numbers to process (1-based indexing)
-    #[serde(default = "default_audio_tracks")]
     pub audio_tracks: Vec<u32>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClipsConfig {
+    #[serde(flatten)]
+    pub keywords: std::collections::HashMap<String, ClipConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OutputConfig {
     /// Directory where output files will be saved
-    #[serde(default = "default_output_dir")]
     pub directory: PathBuf,
-}
-
-fn default_audio_tracks() -> Vec<u32> {
-    vec![1, 2]
-}
-
-fn default_output_dir() -> PathBuf {
-    PathBuf::from("output")
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
             clive: CliveConfig {
-                model: String::from("base"),
+                model: "base".to_string(),
             },
             tracks: TracksConfig {
-                audio_tracks: default_audio_tracks(),
+                audio_tracks: vec![1],
             },
-            clips: HashMap::new(),
+            clips: ClipsConfig {
+                keywords: std::collections::HashMap::new(),
+            },
             output: OutputConfig {
-                directory: default_output_dir(),
+                directory: PathBuf::from("output"),
             },
             input_file: None,
         }
@@ -81,14 +77,8 @@ impl Config {
     /// # Arguments
     /// * `path` - Path to the configuration file
     pub fn from_file(path: &Path) -> Result<Self> {
-        let contents = fs::read_to_string(path).context("Failed to read config file")?;
-        let config: Config = toml::from_str(&contents).context("Failed to parse config file")?;
-
-        // Ensure output directory exists
-        fs::create_dir_all(&config.output.directory)
-            .context("Failed to create output directory")?;
-
-        Ok(config)
+        let content = std::fs::read_to_string(path).context("Failed to read config file")?;
+        toml::from_str(&content).context("Failed to parse config file")
     }
 
     /// Save configuration to a TOML file
@@ -97,11 +87,11 @@ impl Config {
     /// * `path` - Path where the configuration will be saved
     pub fn save_to_file(&self, path: &Path) -> Result<()> {
         let toml = toml::to_string_pretty(self).context("Failed to serialize config")?;
-        fs::write(path, toml).context("Failed to write config file")?;
+        std::fs::write(path, toml).context("Failed to write config file")?;
         Ok(())
     }
 
-    /// Create a new configuration from command line arguments
+    /// Create configuration from CLI arguments
     ///
     /// # Arguments
     /// * `input` - Path to the input video file
@@ -117,28 +107,27 @@ impl Config {
         keywords: Vec<String>,
     ) -> Self {
         let mut config = Config::default();
-
         config.input_file = Some(input);
 
-        if let Some(output_dir) = output {
-            config.output.directory = output_dir;
+        if let Some(output) = output {
+            config.output.directory = output;
         }
 
-        if let Some(model_name) = model {
-            config.clive.model = model_name;
+        if let Some(model) = model {
+            config.clive.model = model;
         }
 
-        if let Some(track_list) = tracks {
-            config.tracks.audio_tracks = track_list;
+        if let Some(tracks) = tracks {
+            config.tracks.audio_tracks = tracks;
         }
 
-        // Create clip configs for each keyword with default timings (30 seconds)
+        // Create clip configs for each keyword with default timings
         for keyword in keywords {
-            config.clips.insert(
+            config.clips.keywords.insert(
                 keyword,
                 ClipConfig {
-                    start_time: 30,
-                    end_time: 30,
+                    start_time: 10,
+                    end_time: 10,
                 },
             );
         }
@@ -146,57 +135,30 @@ impl Config {
         config
     }
 
-    /// Merge command line arguments into an existing configuration
+    /// Merge CLI configuration into this configuration
     ///
     /// # Arguments
     /// * `cli_config` - Configuration from command line arguments
     pub fn merge_cli(&mut self, cli_config: Config) {
         self.input_file = cli_config.input_file;
-
-        if !cli_config.clips.is_empty() {
-            self.clips = cli_config.clips;
-        }
-
-        if cli_config.tracks.audio_tracks != default_audio_tracks() {
-            self.tracks.audio_tracks = cli_config.tracks.audio_tracks;
-        }
-
-        if cli_config.clive.model != "base" {
-            self.clive.model = cli_config.clive.model;
-        }
-
-        if cli_config.output.directory != default_output_dir() {
-            self.output.directory = cli_config.output.directory;
-        }
+        self.output = cli_config.output;
+        self.clive = cli_config.clive;
+        self.tracks = cli_config.tracks;
+        self.clips = cli_config.clips;
     }
 
     /// Validate the configuration
     pub fn validate(&self) -> Result<()> {
-        // Check if input file is specified
         if self.input_file.is_none() {
-            anyhow::bail!("Input file not specified");
+            anyhow::bail!("Input file is required");
         }
 
-        // Check if input file exists
-        if !self.input_file.as_ref().unwrap().exists() {
-            anyhow::bail!("Input file does not exist");
-        }
-
-        // Validate model name
-        match self.clive.model.as_str() {
-            "base" | "tiny" | "small" | "medium" | "large" | "base.en" | "tiny.en" | "small.en"
-            | "medium.en" | "large.en" => (),
-            _ => anyhow::bail!("Invalid model name: {}", self.clive.model),
-        }
-
-        // Validate audio tracks
         if self.tracks.audio_tracks.is_empty() {
-            anyhow::bail!("No audio tracks specified");
+            anyhow::bail!("At least one audio track must be specified");
         }
 
-        // Validate clip configurations
-        if self.clips.is_empty() {
-            anyhow::bail!("No clips specified");
+        if self.clips.keywords.is_empty() {
+            anyhow::bail!("At least one clip keyword must be specified");
         }
 
         Ok(())
@@ -212,8 +174,8 @@ mod tests {
     fn test_default_config() {
         let config = Config::default();
         assert_eq!(config.clive.model, "base");
-        assert_eq!(config.tracks.audio_tracks, vec![1, 2]);
-        assert!(config.clips.is_empty());
+        assert_eq!(config.tracks.audio_tracks, vec![1]);
+        assert!(config.clips.keywords.is_empty());
         assert_eq!(config.output.directory, PathBuf::from("output"));
     }
 
@@ -225,15 +187,15 @@ mod tests {
         let config = Config::from_cli(input.clone(), None, None, None, keywords);
 
         assert_eq!(config.input_file.unwrap(), input);
-        assert_eq!(config.clips.len(), 2);
-        assert!(config.clips.contains_key("test1"));
-        assert!(config.clips.contains_key("test2"));
+        assert_eq!(config.clips.keywords.len(), 2);
+        assert!(config.clips.keywords.contains_key("test1"));
+        assert!(config.clips.keywords.contains_key("test2"));
     }
 
     #[test]
     fn test_config_save_and_load() -> Result<()> {
         let mut config = Config::default();
-        config.clips.insert(
+        config.clips.keywords.insert(
             "test".to_string(),
             ClipConfig {
                 start_time: 10,
@@ -245,9 +207,9 @@ mod tests {
         config.save_to_file(temp_file.path())?;
 
         let loaded_config = Config::from_file(temp_file.path())?;
-        assert_eq!(loaded_config.clips.len(), 1);
-        assert_eq!(loaded_config.clips["test"].start_time, 10);
-        assert_eq!(loaded_config.clips["test"].end_time, 20);
+        assert_eq!(loaded_config.clips.keywords.len(), 1);
+        assert_eq!(loaded_config.clips.keywords["test"].start_time, 10);
+        assert_eq!(loaded_config.clips.keywords["test"].end_time, 20);
 
         Ok(())
     }
