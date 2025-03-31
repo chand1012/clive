@@ -4,5 +4,8 @@
    },  
    "rust-analyzer.check.extraArgs": [  
       "--target-dir=target/rust-analyzer"  
-   ]  
+   ],
+   "cSpell.words": [
+      "Davinci"
+   ]
 }

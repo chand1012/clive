@@ -1,4 +1,4 @@
-# Clive: CLI tool for transcribing and clipping audio
+ # Clive: CLI tool for transcribing and clipping audio
 
 <div align="center">
   <img src="assets/logo.png" alt="Clive Logo" width="200">
@@ -15,6 +15,15 @@
 </div>
 
 Clive is a command-line tool for transcribing audio and creating clips based on keywords. It's designed to make working with audio transcription and clipping as human-friendly as possible, providing a simple and natural syntax with formatted output.
+
+## Why?
+
+I've been working on YouTube videos as a hobby project of mine, and one of the tasks I've had to do a lot of is finding certain moments in long swathes of video that I want to use in my videos.
+Rather than sitting in Davinci Resolve for hours and a manually finding the moments, I thought it would be interesting to see if its possible to automate this process using AI.
+
+This is also being used to see how far I can push the limits of a local AI model, and how much I can squeeze into a single CLI tool.
+Rather than using Python and tons and tons of libraries that users would have to install, I wanted to see if I could condense a full AI pipeline into a single executable.
+Normally I would've chosen Go for this, but my friend [Kyle](https://x.com/kylevasulka) and I are working on a [Tauri app](https://github.com/TimeSurgeLabs/twitch-tools) for our creator tooling, so by using Rust we can easily share code between the two projects.
 
 ## Installation
 
