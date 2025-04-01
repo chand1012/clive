@@ -1,12 +1,12 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use hound;
-use log::{debug, info};
+use log::{debug, info, warn};
 use std::path::PathBuf;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
 use clive::utils::fetch;
-use clive::{Cache, Clip, Config, FFmpeg, Timestamp};
+use clive::{Cache, Clip, Config, FFmpeg, Llama, Timestamp, VectorDB};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -24,8 +24,16 @@ struct Args {
     config: Option<PathBuf>,
 
     /// Whisper model to use (base, tiny, small, medium, large)
-    #[arg(short, long)]
-    model: Option<String>,
+    #[arg(long)]
+    whisper_model: Option<String>,
+
+    /// Language model to use (base, tiny, small, medium, large)
+    #[arg(long)]
+    language_model: Option<String>,
+
+    /// Embedding model to use (base, tiny, small, medium, large)
+    #[arg(long)]
+    embedding_model: Option<String>,
 
     /// Audio tracks to process (1-based indexing)
     #[arg(short, long)]
@@ -70,7 +78,7 @@ fn main() -> Result<()> {
         let cli_config = Config::from_cli(
             args.input.clone(),
             args.output,
-            args.model,
+            args.whisper_model,
             args.tracks,
             keywords,
         );
@@ -80,8 +88,14 @@ fn main() -> Result<()> {
         if let Some(output) = args.output {
             config.output.directory = output;
         }
-        if let Some(model) = args.model {
-            config.clive.model = model;
+        if let Some(whisper_model) = args.whisper_model {
+            config.clive.whisper_model = whisper_model;
+        }
+        if let Some(language_model) = args.language_model {
+            config.clive.language_model = language_model;
+        }
+        if let Some(embedding_model) = args.embedding_model {
+            config.clive.embedding_model = embedding_model;
         }
         if let Some(tracks) = args.tracks {
             config.tracks.audio_tracks = tracks;
@@ -114,10 +128,15 @@ fn process_video(config: &Config, cache: &Cache) -> Result<()> {
     info!("Processing video: {}", input_path.display());
 
     // Step 1: Check/Download model
-    debug!("Step 1: Checking/Downloading model");
+    debug!("Step 1: Checking/Downloading models");
     fetch::download_whisper_model_if_needed(
-        &config.clive.model,
-        &cache.model_path(&config.clive.model),
+        &config.clive.whisper_model,
+        &cache.model_path(&config.clive.whisper_model),
+    )?;
+
+    fetch::download_embedding_model_if_needed(
+        &config.clive.embedding_model,
+        &cache.embedding_model_path(&config.clive.embedding_model),
     )?;
 
     // Step 2: Extract audio tracks
@@ -127,7 +146,7 @@ fn process_video(config: &Config, cache: &Cache) -> Result<()> {
 
     // Step 3: Transcribe audio and combine results
     debug!("Step 3: Transcribing audio");
-    let timestamps = transcribe_audio_tracks(&config.clive.model, &audio_paths, cache)?;
+    let timestamps = transcribe_audio_tracks(&config.clive.whisper_model, &audio_paths, cache)?;
     debug!("Found {} timestamp segments", timestamps.len());
 
     // Step 3.5: Save timestamps to cache
@@ -137,7 +156,7 @@ fn process_video(config: &Config, cache: &Cache) -> Result<()> {
 
     // Step 4: Find clips based on keywords
     debug!("Step 4: Finding clips based on keywords");
-    let clips = find_clips(&timestamps, config)?;
+    let clips = find_clips(&timestamps, config, cache)?;
     debug!("Found {} clips matching keywords", clips.len());
 
     // Step 5: Create output clips
@@ -219,22 +238,41 @@ fn transcribe_audio_tracks(
         debug!("Found {} segments", num_segments);
 
         for i in 0..num_segments {
-            let text = state
-                .full_get_segment_text(i)
-                .context("Failed to get segment text")?;
-            let start = state
-                .full_get_segment_t0(i)
-                .context("Failed to get segment start")? as f64
-                * 0.01;
-            let end = state
-                .full_get_segment_t1(i)
-                .context("Failed to get segment end")? as f64
-                * 0.01;
+            // Try to get all required segment data, skip if any fails
+            let text = match state.full_get_segment_text(i) {
+                Ok(text) => text,
+                Err(e) => {
+                    warn!("Skipping segment {}: Failed to get text: {}", i, e);
+                    continue;
+                }
+            };
 
-            // Get token-level timestamps for this segment
-            let num_tokens = state
-                .full_n_tokens(i)
-                .context("Failed to get number of tokens")?;
+            let start = match state.full_get_segment_t0(i) {
+                Ok(t) => t as f64 * 0.01,
+                Err(e) => {
+                    warn!("Skipping segment {}: Failed to get start time: {}", i, e);
+                    continue;
+                }
+            };
+
+            let end = match state.full_get_segment_t1(i) {
+                Ok(t) => t as f64 * 0.01,
+                Err(e) => {
+                    warn!("Skipping segment {}: Failed to get end time: {}", i, e);
+                    continue;
+                }
+            };
+
+            let num_tokens = match state.full_n_tokens(i) {
+                Ok(n) => n,
+                Err(e) => {
+                    warn!(
+                        "Skipping segment {}: Failed to get number of tokens: {}",
+                        i, e
+                    );
+                    continue;
+                }
+            };
 
             // If there are no tokens, just add the segment
             if num_tokens == 0 {
@@ -256,12 +294,27 @@ fn transcribe_audio_tracks(
             let mut current_text = String::new();
 
             for t in 0..num_tokens {
-                let token = state
-                    .full_get_token_text(i, t)
-                    .context("Failed to get token text")?;
-                let token_data = state
-                    .full_get_token_data(i, t)
-                    .context("Failed to get token data")?;
+                let token = match state.full_get_token_text(i, t) {
+                    Ok(text) => text,
+                    Err(e) => {
+                        debug!(
+                            "Skipping token {} in segment {}: Failed to get text: {}",
+                            t, i, e
+                        );
+                        continue;
+                    }
+                };
+
+                let token_data = match state.full_get_token_data(i, t) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        debug!(
+                            "Skipping token {} in segment {}: Failed to get data: {}",
+                            t, i, e
+                        );
+                        continue;
+                    }
+                };
 
                 // Skip special tokens and empty tokens
                 if token_data.id >= 50258 || token.trim().is_empty() {
@@ -269,11 +322,16 @@ fn transcribe_audio_tracks(
                 }
 
                 // Get token time from whisper
-                let token_time = state
-                    .full_get_segment_t0(i)
-                    .context("Failed to get segment start")?
-                    as f64
-                    * 0.01;
+                let token_time = match state.full_get_segment_t0(i) {
+                    Ok(t) => t as f64 * 0.01,
+                    Err(e) => {
+                        debug!(
+                            "Skipping token {} in segment {}: Failed to get time: {}",
+                            t, i, e
+                        );
+                        continue;
+                    }
+                };
 
                 if token_start.is_none() {
                     token_start = Some(token_time);
@@ -328,24 +386,61 @@ fn transcribe_audio_tracks(
     Ok(all_timestamps)
 }
 
-fn find_clips(timestamps: &[Timestamp], config: &Config) -> Result<Vec<Clip>> {
+fn find_clips(timestamps: &[Timestamp], config: &Config, cache: &Cache) -> Result<Vec<Clip>> {
     let mut clips: Vec<Clip> = Vec::new();
 
-    for (keyword, clip_config) in &config.clips {
-        for timestamp in timestamps {
-            if timestamp
-                .text
-                .to_lowercase()
-                .split_whitespace()
-                .map(|word| word.trim_matches(|c: char| c.is_ascii_punctuation()))
-                .any(|word| word == keyword.to_lowercase())
-            {
-                clips.push(Clip {
-                    start: (timestamp.start - clip_config.start_time as f64).max(0.0),
-                    end: timestamp.end + clip_config.end_time as f64,
-                    keyword: keyword.clone(),
-                });
-            }
+    // for now we'll just implement the vector db search
+    // first initialize the embedding model
+    let mut embedding_model = Llama::new(
+        cache.embedding_model_path(&config.clive.embedding_model),
+        None,
+        config.llama.n_threads,
+        config.llama.n_batch,
+        config.llama.seed,
+        None,
+        true,
+        false,
+        false,
+    )?;
+
+    // only embedding model we support is 1024 dimensions
+    let vector_db = VectorDB::new_in_memory(1024)?;
+
+    // use the batch add to add all the timestamps to the vector db
+    // loop through the clips and add them to the vector db
+    for clip in timestamps {
+        vector_db.add_clip(&mut embedding_model, clip)?;
+    }
+
+    // now we can search the vector db for each moment
+    for moment in &config.moments {
+        let text = &moment.text;
+
+        debug!("Searching for moment: {}", text);
+        let results = vector_db.search(&mut embedding_model, text, 3)?;
+        debug!("Found {} results", results.len());
+
+        for result in results {
+            debug!("Result: {}", result.transcript);
+            let neighboring_clips = vector_db.get_neighboring_clips(
+                result.id,
+                config.line_buffer.before as usize,
+                config.line_buffer.after as usize,
+            )?;
+            debug!("Found {} neighboring clips", neighboring_clips.len());
+            // get the start of the first clip and the end of the last clip
+            let start = neighboring_clips.first().unwrap().start_time;
+            let end = neighboring_clips.last().unwrap().end_time;
+            let keyword = neighboring_clips
+                .iter()
+                .map(|c| c.transcript.clone())
+                .collect::<Vec<String>>()
+                .join("\n");
+            clips.push(Clip {
+                start,
+                end,
+                keyword,
+            });
         }
     }
 
@@ -372,9 +467,8 @@ fn create_output_clips(input_path: &PathBuf, clips: &[Clip], output_dir: &PathBu
 
     for (i, clip) in clips.iter().enumerate() {
         let output_path = output_dir.join(format!(
-            "clip_{}_{}_{}.mp4",
+            "clip_{}_{}.mp4",
             i + 1,
-            clip.keyword.replace([' ', ','], "_"),
             input_path.file_stem().unwrap().to_string_lossy()
         ));
 

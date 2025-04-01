@@ -1,14 +1,32 @@
 [clive]
-model = "base"
+whisper_model = "base"
+language_model = "base"
+embedding_model = "base"
 
+# [llama]
+# ctx_size = 4096
+# n_threads = 8
+# n_batch = 8
+# seed = 42
+# disable_gpu = false
+
+# ... rest of config ...
 [tracks]
 # if there are multiple audio tracks in a video, specify which ones to use.
 # Ideally users should record voices in separate tracks for easier processing.
-audio_tracks = [2, 3] # default 
+audio_tracks = [1] # default 
 
-[clips.clip]
-start_time = 60 # seconds before the keyword
-end_time = 5    # seconds after the keyword
+[[moments]]
+text = "I nailed him in the forehead"
+
+[[moments]]
+text = "Valley of the dolls non lethal"
+
+[line_buffer]
+# Number of lines to look before and after a potential clip when searching
+# if you crank the context length, you can increase this to get more context
+before = 5 # default
+after = 5  # default
 
 [output]
 directory = "output"

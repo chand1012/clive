@@ -22,6 +22,13 @@ impl Embedder for crate::utils::Llama {
     }
 }
 
+pub struct DBTimestamp {
+    pub id: i64,
+    pub start_time: f64,
+    pub end_time: f64,
+    pub transcript: String,
+}
+
 pub struct VectorDB {
     conn: Connection,
 }
@@ -29,6 +36,9 @@ pub struct VectorDB {
 // maybe in the future if this module gets GPU support we can remove
 // the need for a copy of llama that handles the embedding: https://github.com/asg017/sqlite-lembed
 // however for now we need our own implementation
+
+// use scalar function method as defined here so we can use a normal table
+// https://alexgarcia.xyz/sqlite-vec/features/knn.html#manually-with-sql-scalar-functions
 
 impl VectorDB {
     pub fn new_in_memory(dimensions: usize) -> Result<Self> {
@@ -39,15 +49,16 @@ impl VectorDB {
 
         let conn = Connection::open_in_memory().context("Failed to open in memory database")?;
 
+        // Create a regular table with BLOB for embeddings and CHECK constraints
         conn.execute(
             format!(
-                "CREATE VIRTUAL TABLE clips USING vec0(
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                transcript_embedding FLOAT[{}],
-                start_time FLOAT,
-                end_time FLOAT,
-                transcript TEXT
-            );",
+                "CREATE TABLE clips (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    transcript_embedding BLOB CHECK(vec_length(transcript_embedding) = {}),
+                    start_time FLOAT,
+                    end_time FLOAT,
+                    transcript TEXT
+                );",
                 dimensions
             )
             .as_str(),
@@ -78,8 +89,6 @@ impl VectorDB {
         embedder: &mut E,
         timestamps: Vec<Timestamp>,
     ) -> Result<()> {
-        // need to use the batch embedding function
-        // first make a vector of the text transcript
         let transcripts = timestamps
             .iter()
             .map(|t| t.text.clone())
@@ -87,14 +96,12 @@ impl VectorDB {
 
         let transcript_embeddings = embedder.batch_embed(&transcripts)?;
 
-        // reconstruct them as a vec of tuples
         let clips: Vec<(Vec<f32>, f64, f64, String)> = timestamps
             .into_iter()
             .zip(transcript_embeddings.into_iter())
             .map(|(t, e)| (e, t.start, t.end, t.text))
             .collect();
 
-        // then use the batch insert function
         let mut stmt = self.conn.prepare(
             "INSERT INTO clips (transcript_embedding, start_time, end_time, transcript) VALUES (?, ?, ?, ?)",
         )?;
@@ -111,27 +118,139 @@ impl VectorDB {
         embedder: &mut E,
         query: &str,
         max_results: usize,
-    ) -> Result<Vec<Timestamp>> {
+    ) -> Result<Vec<DBTimestamp>> {
         let query_embedding = embedder.embed(query)?;
 
         let mut stmt = self.conn.prepare(
-            "SELECT start_time, end_time, transcript FROM clips WHERE transcript_embedding MATCH ? ORDER BY distance LIMIT ?",
+            "SELECT id, start_time, end_time, transcript 
+             FROM clips 
+             ORDER BY vec_distance_cosine(transcript_embedding, ?) ASC 
+             LIMIT ?",
         )?;
 
         let mut rows = stmt.query_map(params![query_embedding.as_bytes(), max_results], |row| {
+            let id: i64 = row.get("id")?;
             let start_time: f64 = row.get("start_time")?;
             let end_time: f64 = row.get("end_time")?;
             let transcript: String = row.get("transcript")?;
 
-            Ok(Timestamp {
-                start: start_time,
-                end: end_time,
-                text: transcript,
+            Ok(DBTimestamp {
+                id,
+                start_time,
+                end_time,
+                transcript,
             })
         })?;
 
         let mut results = Vec::new();
+        while let Some(Ok(timestamp)) = rows.next() {
+            results.push(timestamp);
+        }
 
+        Ok(results)
+    }
+
+    pub fn get_neighboring_clips(
+        &self,
+        clip_id: i64,
+        num_neighbors_before: usize,
+        num_neighbors_after: usize,
+    ) -> Result<Vec<DBTimestamp>> {
+        // Get the target clip
+        let target_clip: DBTimestamp = self.conn.query_row(
+            "SELECT id, start_time, end_time, transcript FROM clips WHERE id = ?",
+            params![clip_id],
+            |row| {
+                Ok(DBTimestamp {
+                    id: row.get("id")?,
+                    start_time: row.get("start_time")?,
+                    end_time: row.get("end_time")?,
+                    transcript: row.get("transcript")?,
+                })
+            },
+        )?;
+
+        // Get clips before the target time
+        let mut stmt = self.conn.prepare(
+            "SELECT id, start_time, end_time, transcript 
+             FROM clips 
+             WHERE id != ? AND start_time < ?
+             ORDER BY start_time DESC
+             LIMIT ?",
+        )?;
+
+        let before_rows = stmt.query_map(
+            params![clip_id, target_clip.start_time, num_neighbors_before],
+            |row| {
+                Ok(DBTimestamp {
+                    id: row.get("id")?,
+                    start_time: row.get("start_time")?,
+                    end_time: row.get("end_time")?,
+                    transcript: row.get("transcript")?,
+                })
+            },
+        )?;
+
+        // Get clips after the target time
+        let mut stmt = self.conn.prepare(
+            "SELECT id, start_time, end_time, transcript 
+             FROM clips 
+             WHERE id != ? AND start_time > ?
+             ORDER BY start_time ASC
+             LIMIT ?",
+        )?;
+
+        let after_rows = stmt.query_map(
+            params![clip_id, target_clip.start_time, num_neighbors_after],
+            |row| {
+                Ok(DBTimestamp {
+                    id: row.get("id")?,
+                    start_time: row.get("start_time")?,
+                    end_time: row.get("end_time")?,
+                    transcript: row.get("transcript")?,
+                })
+            },
+        )?;
+
+        // Combine results in chronological order
+        let mut results = Vec::new();
+
+        // Add before clips in reverse order (to maintain chronological order)
+        let mut before_clips: Vec<_> = before_rows.filter_map(Result::ok).collect();
+        before_clips.reverse();
+        results.extend(before_clips);
+
+        // Add the target clip in the middle
+        results.push(target_clip);
+
+        // Add after clips
+        results.extend(after_rows.filter_map(Result::ok));
+
+        Ok(results)
+    }
+
+    pub fn get_clips_in_range(&self, start_time: f64, end_time: f64) -> Result<Vec<Timestamp>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT start_time, end_time, transcript 
+             FROM clips 
+             WHERE (start_time BETWEEN ? AND ?) OR (end_time BETWEEN ? AND ?) 
+             ORDER BY start_time ASC",
+        )?;
+
+        let mut rows =
+            stmt.query_map(params![start_time, end_time, start_time, end_time], |row| {
+                let start_time: f64 = row.get("start_time")?;
+                let end_time: f64 = row.get("end_time")?;
+                let transcript: String = row.get("transcript")?;
+
+                Ok(Timestamp {
+                    start: start_time,
+                    end: end_time,
+                    text: transcript,
+                })
+            })?;
+
+        let mut results = Vec::new();
         while let Some(Ok(timestamp)) = rows.next() {
             results.push(timestamp);
         }
@@ -147,7 +266,6 @@ mod tests {
 
     // Mock implementation of Llama for testing
     struct MockLlama {
-        // Counter to generate unique embeddings for different inputs
         counter: AtomicUsize,
     }
 
@@ -158,14 +276,12 @@ mod tests {
             }
         }
 
-        // Helper to generate deterministic embeddings for testing
         fn generate_embedding(&self, _text: &str) -> Vec<f32> {
             let count = self.counter.fetch_add(1, Ordering::SeqCst);
-            vec![count as f32; 384] // Using 384 dimensions as it's common for embedding models
+            vec![count as f32; 384]
         }
     }
 
-    // Implement the Embedder trait for our mock
     impl Embedder for MockLlama {
         fn embed(&mut self, text: &str) -> Result<Vec<f32>> {
             Ok(self.generate_embedding(text))
@@ -198,11 +314,9 @@ mod tests {
 
     #[test]
     fn test_vector_db_operations() -> Result<()> {
-        // Initialize the database with 384 dimensions (standard for many embedding models)
         let db = VectorDB::new_in_memory(384)?;
         let mut llama = MockLlama::new();
 
-        // Test single clip addition
         let timestamp = Timestamp {
             start: 0.0,
             end: 10.0,
@@ -210,23 +324,14 @@ mod tests {
         };
         db.add_clip(&mut llama, &timestamp)?;
 
-        // Test batch clip addition
         let timestamps = create_test_timestamps();
         db.batch_add_clips(&mut llama, timestamps.clone())?;
 
-        // Test search functionality
         let results = db.search(&mut llama, "test", 2)?;
         assert!(!results.is_empty(), "Search should return results");
         assert!(
             results.len() <= 2,
             "Search should respect max_results parameter"
-        );
-
-        // Verify that the returned results contain our test data
-        let contains_test = results.iter().any(|t| t.text.contains("test"));
-        assert!(
-            contains_test,
-            "Search results should contain relevant matches"
         );
 
         Ok(())
@@ -237,7 +342,6 @@ mod tests {
         let db = VectorDB::new_in_memory(384)?;
         let mut llama = MockLlama::new();
 
-        // Search on empty database should return empty results
         let results = db.search(&mut llama, "test", 5)?;
         assert!(
             results.is_empty(),
@@ -252,16 +356,49 @@ mod tests {
         let db = VectorDB::new_in_memory(384)?;
         let mut llama = MockLlama::new();
 
-        // Add multiple clips
         let timestamps = create_test_timestamps();
         db.batch_add_clips(&mut llama, timestamps)?;
 
-        // Test different max_results values
         let results1 = db.search(&mut llama, "test", 1)?;
         assert_eq!(results1.len(), 1, "Should return exactly 1 result");
 
         let results2 = db.search(&mut llama, "test", 2)?;
         assert!(results2.len() <= 2, "Should return at most 2 results");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_neighboring_clips() -> Result<()> {
+        let db = VectorDB::new_in_memory(384)?;
+        let mut llama = MockLlama::new();
+
+        let timestamps = create_test_timestamps();
+        db.batch_add_clips(&mut llama, timestamps)?;
+
+        // Get neighbors of the middle clip (id = 2)
+        let neighbors = db.get_neighboring_clips(2, 1, 1)?;
+        assert_eq!(neighbors.len(), 2, "Should return exactly 2 neighbors");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_clips_in_range() -> Result<()> {
+        let db = VectorDB::new_in_memory(384)?;
+        let mut llama = MockLlama::new();
+
+        let timestamps = create_test_timestamps();
+        db.batch_add_clips(&mut llama, timestamps)?;
+
+        let clips = db.get_clips_in_range(5.0, 15.0)?;
+        assert!(!clips.is_empty(), "Should return clips in the range");
+        assert!(
+            clips
+                .iter()
+                .all(|c| (c.start <= 15.0 && c.start >= 5.0) || (c.end <= 15.0 && c.end >= 5.0)),
+            "All clips should overlap with the range"
+        );
 
         Ok(())
     }

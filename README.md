@@ -147,8 +147,10 @@ Available models from HuggingFace:
 
 - [x] Basic clip extraction and merging
 - [x] Overlapping clip management
-- [ ] Silence removal capabilities
 - [ ] LLM integration for advanced operations
+  - [x] Basic vector based clip search
+  - [ ] Analyze the transcript for moments that the user wants to clip
+  - [ ] Make the vector based search looser, it should find a lot more clips
 
 ## Contributing
 

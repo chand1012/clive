@@ -3,7 +3,7 @@ use log::{debug, info};
 use std::fs::File;
 use std::io::{self, BufWriter, Read, Write};
 use std::path::PathBuf;
-
+//https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q8_0.bin
 /// Base URL for Whisper models on HuggingFace
 const HUGGINGFACE_WHISPER_BASE_URL: &str =
     "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
@@ -12,35 +12,35 @@ const HUGGINGFACE_WHISPER_BASE_URL: &str =
 pub fn get_whisper_model_url(model_name: &str) -> Result<String> {
     let url = match model_name {
         "base" => format!(
-            "{}ggml-base.q8_0.bin?download=true",
+            "{}ggml-base-q8_0.bin?download=true",
             HUGGINGFACE_WHISPER_BASE_URL
         ),
         "base.en" => format!(
-            "{}ggml-base.en-q8_0.bin?download=true",
+            "{}ggml-base-en-q8_0.bin?download=true",
             HUGGINGFACE_WHISPER_BASE_URL
         ),
         "tiny" => format!(
-            "{}ggml-tiny.q8_0.bin?download=true",
+            "{}ggml-tiny-q8_0.bin?download=true",
             HUGGINGFACE_WHISPER_BASE_URL
         ),
         "tiny.en" => format!(
-            "{}ggml-tiny.en-q8_0.bin?download=true",
+            "{}ggml-tiny-en-q8_0.bin?download=true",
             HUGGINGFACE_WHISPER_BASE_URL
         ),
         "small" => format!(
-            "{}ggml-small.q8_0.bin?download=true",
+            "{}ggml-small-q8_0.bin?download=true",
             HUGGINGFACE_WHISPER_BASE_URL
         ),
         "small.en" => format!(
-            "{}ggml-small.en-q8_0.bin?download=true",
+            "{}ggml-small-en-q8_0.bin?download=true",
             HUGGINGFACE_WHISPER_BASE_URL
         ),
         "medium" => format!(
-            "{}ggml-medium.q5_0.bin?download=true",
+            "{}ggml-medium-q5_0.bin?download=true",
             HUGGINGFACE_WHISPER_BASE_URL
         ),
         "medium.en" => format!(
-            "{}ggml-medium.en-q5_0.bin?download=true",
+            "{}ggml-medium-en-q5_0.bin?download=true",
             HUGGINGFACE_WHISPER_BASE_URL
         ),
         "large" => format!(
@@ -115,6 +115,19 @@ pub fn download_whisper_model_if_needed(model_name: &str, model_path: &PathBuf) 
     if !model_path.exists() {
         info!("Downloading {} model...", model_name);
         let url = get_whisper_model_url(model_name)?;
+        download_file(&url, model_path)?;
+        info!("Successfully downloaded model");
+    } else {
+        debug!("Model already exists at {}", model_path.display());
+    }
+    Ok(())
+}
+
+/// Download an embedding model if it doesn't exist in the cache
+pub fn download_embedding_model_if_needed(model_name: &str, model_path: &PathBuf) -> Result<()> {
+    if !model_path.exists() {
+        info!("Downloading {} model...", model_name);
+        let url = get_embedding_model_url(model_name)?;
         download_file(&url, model_path)?;
         info!("Successfully downloaded model");
     } else {

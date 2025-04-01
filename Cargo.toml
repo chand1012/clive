@@ -6,7 +6,6 @@ description = "Clive is a CLI tool for transcribing and clipping audio"
 authors = ["Chandler <chandler@chigzz.com>"]
 license = "MIT"
 repository = "https://github.com/chand1012/clive"
-license-file = "LICENSE"
 readme = "README.md"
 documentation = "README.md"
 keywords = ["audio", "transcription", "video", "cli", "whisper"]

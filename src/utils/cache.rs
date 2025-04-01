@@ -79,7 +79,18 @@ impl Cache {
 
     /// Get the path for a model file
     pub fn model_path(&self, model_name: &str) -> PathBuf {
-        self.models_dir.join(format!("ggml-{}.bin", model_name))
+        self.models_dir.join(format!("whisper-{}.bin", model_name))
+    }
+
+    /// Get the path for an embedding model file
+    pub fn embedding_model_path(&self, model_name: &str) -> PathBuf {
+        self.models_dir
+            .join(format!("embedding-{}.bin", model_name))
+    }
+
+    /// Get the path for a language model file
+    pub fn language_model_path(&self, model_name: &str) -> PathBuf {
+        self.models_dir.join(format!("llm-{}.bin", model_name))
     }
 
     /// Check if a model file exists
