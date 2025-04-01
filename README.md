@@ -151,6 +151,7 @@ Available models from HuggingFace:
   - [x] Basic vector based clip search
   - [ ] Analyze the transcript for moments that the user wants to clip
   - [ ] Make the vector based search looser, it should find a lot more clips
+  - [ ] Make modes of "lite" and "full" configurable. "lite" is vector only, "full" is vector + LLM
 
 ## Contributing
 
