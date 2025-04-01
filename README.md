@@ -1,6 +1,6 @@
 <div align="center">
   <img src="assets/logo.png" alt="Clive Logo" width="200">
-  <h1>Clive CLI: Audio transcription and clipping for the AI era</h1>
+  <h1>Clive CLI: Natural language video processing</h1>
 </div>
 
 <div align="center">
@@ -12,7 +12,7 @@
   </a>
 </div>
 
-Clive is a command-line tool for transcribing audio and creating clips based on keywords. It's designed to make working with audio transcription and clipping as human-friendly as possible, providing a simple and natural syntax with formatted output.
+Clive is a command-line tool for transcribing audio and creating clips based on keywords and natural language. It's designed to make working with audio transcription and clipping as human-friendly as possible, providing a simple and natural syntax with formatted output.
 
 ## Why?
 

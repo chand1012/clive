@@ -5,6 +5,7 @@ use log::{debug, info};
 use std::path::PathBuf;
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
+use clive::utils::fetch;
 use clive::{Cache, Clip, Config, FFmpeg, Timestamp};
 
 #[derive(Parser, Debug)]
@@ -114,7 +115,10 @@ fn process_video(config: &Config, cache: &Cache) -> Result<()> {
 
     // Step 1: Check/Download model
     debug!("Step 1: Checking/Downloading model");
-    download_model_if_needed(config, cache)?;
+    fetch::download_whisper_model_if_needed(
+        &config.clive.model,
+        &cache.model_path(&config.clive.model),
+    )?;
 
     // Step 2: Extract audio tracks
     debug!("Step 2: Extracting audio tracks");
@@ -142,48 +146,6 @@ fn process_video(config: &Config, cache: &Cache) -> Result<()> {
     info!("Successfully created {} clips", clips.len());
 
     Ok(())
-}
-
-fn download_model_if_needed(config: &Config, cache: &Cache) -> Result<()> {
-    if !cache.model_exists(&config.clive.model) {
-        info!("Downloading {} model...", config.clive.model);
-        let url = get_model_url(&config.clive.model)?;
-        debug!("Model URL: {}", url);
-
-        let mut response = ureq::get(&url).call().context("Failed to download model")?;
-        debug!("Got response from server");
-
-        let mut file = std::fs::File::create(cache.model_path(&config.clive.model))?;
-        debug!(
-            "Created model file at {}",
-            cache.model_path(&config.clive.model).display()
-        );
-        std::io::copy(&mut response.body_mut().as_reader(), &mut file)?;
-        info!("Successfully downloaded model");
-    } else {
-        debug!(
-            "Model already exists at {}",
-            cache.model_path(&config.clive.model).display()
-        );
-    }
-    Ok(())
-}
-
-fn get_model_url(model_name: &str) -> Result<String> {
-    let base_url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/";
-    let url = match model_name {
-        "base" => format!("{}ggml-base.q8_0.bin?download=true", base_url),
-        "base.en" => format!("{}ggml-base.en-q8_0.bin?download=true", base_url),
-        "tiny" => format!("{}ggml-tiny.q8_0.bin?download=true", base_url),
-        "tiny.en" => format!("{}ggml-tiny.en-q8_0.bin?download=true", base_url),
-        "small" => format!("{}ggml-small.q8_0.bin?download=true", base_url),
-        "small.en" => format!("{}ggml-small.en-q8_0.bin?download=true", base_url),
-        "medium" => format!("{}ggml-medium.q5_0.bin?download=true", base_url),
-        "medium.en" => format!("{}ggml-medium.en-q5_0.bin?download=true", base_url),
-        "large" => format!("{}ggml-large-v3-turbo-q8_0.bin?download=true", base_url),
-        _ => anyhow::bail!("Invalid model name: {}", model_name),
-    };
-    Ok(url)
 }
 
 fn extract_audio_tracks(config: &Config, cache: &Cache) -> Result<Vec<PathBuf>> {
@@ -237,15 +199,6 @@ fn transcribe_audio_tracks(
         let samples = load_audio(audio_path)?;
         debug!("Loaded {} samples", samples.len());
 
-        // Convert samples to i16 for whisper processing
-        debug!("Converting samples to i16 format");
-        let i16_samples: Vec<i16> = samples.iter().map(|&x| (x * 32767.0) as i16).collect();
-
-        // Convert to f32 for whisper
-        let mut inter_samples = vec![0.0; i16_samples.len()];
-        whisper_rs::convert_integer_to_float_audio(&i16_samples, &mut inter_samples)
-            .context("Failed to convert audio to float")?;
-
         // Create parameters for transcription
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some("en"));
@@ -257,7 +210,7 @@ fn transcribe_audio_tracks(
         let mut state = ctx.create_state().context("Failed to create state")?;
         debug!("Running transcription on entire audio file");
         state
-            .full(params, &inter_samples)
+            .full(params, &samples)
             .context("Failed to process audio")?;
 
         let num_segments = state
